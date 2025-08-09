@@ -3,16 +3,16 @@ import pandas as pd
 import google.generativeai as genai
 import io
 import plotly.express as px
+import re
 
-# ---------------------------
+
 # GEMINI SETUP
-# ---------------------------
-genai.configure(api_key="")  # Replace with your key
+
+genai.configure(api_key="AIzaSyC2afxztIetwGp8IHbNMN5hjURXmqqxibE")  # Replace with your key
 model = genai.GenerativeModel("gemini-2.5-flash")
 
-# ---------------------------
 # PARAMETERS
-# ---------------------------
+
 available_params = [
     "Company_Name", "Location", "Industry_Type", "Sub_Industry",
     "Company_Revenue_USD_Billions", "Market_Cap_USD_Billions",
@@ -22,9 +22,8 @@ available_params = [
     "Stock_Exchange"
 ]
 
-# ---------------------------
 # STREAMLIT CONFIG
-# ---------------------------
+
 st.set_page_config(page_title="Company Competitive Benchmarking Dashboard", layout="wide")
 st.title("Company Competitive Benchmarking Dashboard")
 
@@ -37,23 +36,21 @@ with st.sidebar:
     )
     run_analysis = st.button("Run Benchmark")
 
-# ---------------------------
+
 # GEMINI FUNCTIONS
-# ---------------------------
+
 def get_benchmark_data(company, competitors):
     prompt = f"""
 You are a competitive benchmarking expert.
 
-Generate a table comparing {company} and its top {competitors} competitors.
+Generate ONLY a clean, valid CSV comparing {company} and its top {competitors} competitors.
 
 Rules:
-1. Include the company itself and exactly {competitors} competitors.
-2. Use these exact column names and in this order:
-{", ".join(available_params)}
-3. Each row must have values for ALL columns. If unknown, write "N/A".
-4. All rows must have the same number of values matching the headers exactly.
-5. Return ONLY CSV text. No extra commentary, no markdown, no explanations.
-6. The first row MUST be the column headers exactly as given.
+1. The first row MUST be the exact column headers: {", ".join(available_params)}
+2. Include the company itself and exactly {competitors} competitors (total {competitors+1} rows).
+3. Each cell must contain a value (or "N/A"), no blanks allowed.
+4. No extra text, commentary, markdown, or code blocks — ONLY pure CSV.
+5. Use commas (,) as separators, and ensure no extra spaces around them.
 """
     response = model.generate_content(prompt)
     return response.text.strip()
@@ -99,20 +96,46 @@ Guidelines:
     except:
         return "Could not generate insights."
 
-# ---------------------------
-# CSV to DataFrame
-# ---------------------------
+
+#  CSV PARSER
+
 def parse_csv_to_df(csv_text):
     try:
-        df = pd.read_csv(io.StringIO(csv_text))
+        # Extract CSV-like section
+        csv_match = re.search(r"((?:[^\n,]+,)+[^\n,]+(?:\n.*)+)", csv_text.strip())
+        if csv_match:
+            csv_text = csv_match.group(1)
+
+        # Read CSV as string first
+        df = pd.read_csv(io.StringIO(csv_text), dtype=str)
+
+        # Ensure all required columns exist
+        for col in available_params:
+            if col not in df.columns:
+                df[col] = "N/A"
+
+        # Keep columns in fixed order
+        df = df[available_params]
+
+        # Drop completely empty rows
+        df = df.dropna(how="all")
+
+        # Strip whitespace
+        df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
+
+        # Convert numerics where possible
+        for col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="ignore")
+
         return df
+
     except Exception as e:
         st.error(f"Could not parse CSV from Gemini: {e}")
         return None
 
-# ---------------------------
+
 # MAIN LOGIC
-# ---------------------------
+
 df_result = None
 
 if run_analysis:
@@ -124,19 +147,16 @@ if run_analysis:
             df_result = parse_csv_to_df(csv_text)
 
         if df_result is not None and not df_result.empty:
-            # Filter for selected params
+            # Filter selected params
             df_result = df_result[[col for col in selected_params if col in df_result.columns]]
 
-            # Create Tabs
+            # Tabs
             tab1, tab2, tab3, tab4 = st.tabs(["Benchmark Table", "Analysis", "Company Info", "Insights"])
 
-            # ---------------------------
-            # TAB 1: Benchmark Table
-            # ---------------------------
+            # TAB 1
             with tab1:
                 st.subheader("Benchmark Table")
                 st.dataframe(df_result, use_container_width=True)
-                # CSV Download Button
                 st.download_button(
                     label="Download CSV",
                     data=df_result.to_csv(index=False),
@@ -144,9 +164,7 @@ if run_analysis:
                     mime="text/csv"
                 )
 
-            # ---------------------------
-            # TAB 2: Analysis
-            # ---------------------------
+            # TAB 2
             with tab2:
                 st.subheader("Summary Insights from Analysis")
                 numeric_cols = df_result.select_dtypes(include=['number']).columns
@@ -160,9 +178,7 @@ if run_analysis:
                     fig = px.bar(df_result, x="Company_Name", y=col, title=f"{col} Comparison")
                     st.plotly_chart(fig, use_container_width=True)
 
-            # ---------------------------
-            # TAB 3: Company Info
-            # ---------------------------
+            # TAB 3
             with tab3:
                 st.subheader("Brief Info for All Companies in Table")
                 with st.spinner("Fetching company info..."):
@@ -171,9 +187,7 @@ if run_analysis:
                     with st.expander(comp):
                         st.write(info)
 
-            # ---------------------------
-            # TAB 4: Insights
-            # ---------------------------
+            # TAB 4
             with tab4:
                 st.subheader("Insights and Learnings from the Table")
                 with st.spinner("Generating insights..."):
